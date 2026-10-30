@@ -2,43 +2,33 @@
 
 Streamlit app for sending and receiving **virtual** rupees during friendly games (poker etc.).
 Every new player starts with ₹1,00,000. Players can delete their own account from the sidebar
-(PIN + confirmation); this also removes their backup file from their Google Drive.
+(PIN + confirmation).
 
-## How backup works (per player, in their own Google Drive)
+All data (players, balances, transactions) is stored in a **Turso** database, so nothing is lost
+when the app restarts or is redeployed, and every payment is a single atomic database
+transaction (no double-spend, no negative balances, even if several people pay at once).
 
-- Players click **Sign in with Google**. The app creates `friendly_games_wallet_backup.json`
-  in **that player's own My Drive** and keeps it updated with their latest balance + transactions.
-  The app can only see files it created itself (`drive.file` scope), never the rest of their Drive.
-- **On every login/startup** the app checks the player's Drive backup: if it is newer than what the
-  server has (e.g. the host restarted and lost data) it offers to restore it, otherwise it uploads the latest amount.
-- **After every transaction** the sender's Drive is updated immediately. A receiver's Drive is
-  updated the next time they open the app.
-- Backups are **signed** (HMAC), so editing the file to add money makes it invalid.
-- **No-Google fallback:** "Manual backup" lets players download their signed backup file and restore it later.
+## Set up Turso (one time, ~3 minutes)
 
-## One-time setup by the app owner (players never touch Google Cloud)
-
-Automatic saving into a person's own Drive needs Google's "Sign in with Google" (OAuth), which
-requires one OAuth client ID. This is free and done once by whoever hosts the app:
-
-1. https://console.cloud.google.com → create a project → **APIs & Services → Library** → enable **Google Drive API**.
-2. **OAuth consent screen**: User type **External**, fill app name + your email, add scope
-   `.../auth/drive.file`. Then click **Publish app** (otherwise only listed test users can sign in,
-   and their sign-in expires after 7 days). `drive.file` is a non-sensitive scope, so no Google review is needed.
-3. **Credentials → Create credentials → OAuth client ID → Web application**. Add your app URL as an
-   **Authorized redirect URI** (e.g. `https://yourapp.streamlit.app/` or `http://localhost:8501/` for local runs).
-4. Add to `.streamlit/secrets.toml` (or Streamlit Cloud → Settings → Secrets):
-
-```toml
-backup_secret = "any-long-random-string"   # keep this constant so old backups stay valid
-
-[google_oauth]
-client_id = "xxxx.apps.googleusercontent.com"
-client_secret = "xxxx"
-redirect_uri = "https://yourapp.streamlit.app/"   # must match step 3 exactly
+```bash
+# install the CLI: https://docs.turso.tech/cli/installation
+turso auth signup                      # or: turso auth login
+turso db create friendly-wallet
+turso db show friendly-wallet --url    # -> libsql://friendly-wallet-<org>.turso.io
+turso db tokens create friendly-wallet # -> the auth token
 ```
 
-Without the `[google_oauth]` block the app still works; players just use the manual backup file.
+(You can also create the database and token from the Turso dashboard.)
+
+Then put both values in `.streamlit/secrets.toml` — or, on Streamlit Community Cloud,
+in **App settings → Secrets**:
+
+```toml
+TURSO_DATABASE_URL = "libsql://friendly-wallet-<org>.turso.io"
+TURSO_AUTH_TOKEN   = "eyJ..."
+```
+
+Environment variables with the same names also work. The tables are created automatically on first start.
 
 ## Run
 
@@ -47,8 +37,14 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+If no Turso settings are found, the app uses a local file (`wallet.db`) so you can try it out.
+The sidebar shows which database is in use. Local files are **not** permanent on cloud hosts,
+so use Turso for real games.
+
 ## Notes
 
-- Balances live in one shared ledger on the app server (needed so players can pay each other).
-  Each player's Drive backup is what restores their money if the server is reset.
-- PINs are salted + hashed (PBKDF2). Money is virtual only.
+- PINs are salted + hashed (PBKDF2), never stored in plain text.
+- Deleting an account removes the player and their balance. Their past payments remain in other
+  players' histories as "Name (deleted)", and the name becomes available again.
+- Money is virtual only; the app is meant for friendly games among friends.
+- Data from the earlier Google Drive version isn't migrated; players re-join with the new balance.
